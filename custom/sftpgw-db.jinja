@@ -1,0 +1,59 @@
+{% set ID = env['deployment'] + '-' + env['name'] %}
+{% set domain = env['project'].split(':') %}
+{% if domain|length >1 %}
+  {% set projectName = domain[1] + '.' + domain[0] %}
+{% else %}
+  {% set projectName = domain[0] %}
+{% endif %}
+
+resources:
+
+- name: {{ ID }}-master
+  type: gcp-types/sqladmin-v1beta4:instances
+  properties:
+    backendType: SECOND_GEN
+    instanceType: CLOUD_SQL_INSTANCE
+    databaseVersion: POSTGRES_13
+    region: {{ properties['region'] }}
+    rootPassword: {{ properties['password'] }}
+    settings:
+      tier: db-custom-4-16384
+      dataDiskSizeGb: 20
+      dataDiskType: PD_SSD
+      storageAutoResize: true
+      replicationType: SYNCHRONOUS
+      activationPolicy: ALWAYS
+      availabilityType: REGIONAL
+      maintenanceWindow:
+        hour: 0
+        day: 7
+      backupConfiguration:
+        enabled: true
+        startTime: '00:00'
+      ipConfiguration:
+        ipv4Enabled: false
+        privateNetwork: {{ properties ["network"]}}
+      databaseFlags:
+        - name: cloudsql.iam_authentication
+          value: on
+
+- name: {{ ID }}-sftpgw-db
+  type: gcp-types/sqladmin-v1beta4:databases
+  properties:
+    name: sftpgw
+    instance: $(ref.{{ ID }}-master.name)
+    charset: utf8
+  metadata:
+    dependsOn:
+      - {{ ID }}-db-service-user
+
+- name: {{ ID }}-db-service-user
+  type: gcp-types/sqladmin-v1beta4:users
+  properties:
+    name: {{ properties['serviceAccount'] }}
+    instance: $(ref.{{ ID }}-master.name)
+    type: CLOUD_IAM_SERVICE_ACCOUNT
+
+outputs:
+- name: connection
+  value: $(ref.{{ ID }}-master.connectionName)

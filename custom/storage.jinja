@@ -1,0 +1,14 @@
+{% set STORAGE_NAME = env["deployment"] + "-" + env["name"] %}
+
+
+resources:
+
+- type: gcp-types/storage-v1:buckets
+  name: {{ STORAGE_NAME }}
+  properties:
+    location: US
+    storageClass: STANDARD
+
+outputs:
+- name: name
+  value: $(ref.{{ STORAGE_NAME }}.name)

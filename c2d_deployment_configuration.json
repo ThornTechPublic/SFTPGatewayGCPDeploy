@@ -1,0 +1,7 @@
+{
+  "defaultDeploymentType": "SINGLE_VM",
+  "imageName": "sftpgw-3-3-3-1660942814",
+  "projectId": "thorn-technologies-public",
+  "templateName": "nonexistent_template",
+  "useSolutionPackage": true
+}

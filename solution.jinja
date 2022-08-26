@@ -1,0 +1,221 @@
+{% import "path_utils.jinja" as path_utils with context %}
+
+{% set project = env["project"] %}
+{% set deployment = env["deployment"] %}
+{% set name = "%s-vm-tmpl" % env["name"] %}
+{% set instanceName = "%s-vm" % deployment %}
+{% set zone = properties["zone"] %}
+{% set region = zone[:-2] %}
+{% set machineType = properties["machineType"] %}
+{% set networks = [] %}
+{% for network in properties["network"] %}
+{% set _ = networks.append(path_utils.networkPath(network)) %}
+{% endfor %}
+{% set subnetworks = properties["subnetwork"] %}
+{% set externalIPs = properties["externalIP"] %}
+{% set bootDiskType = properties["bootDiskType"] %}
+{% set bootDiskSizeGb = properties["bootDiskSizeGb"] %}
+{% set hasExternalIP = externalIPs and externalIPs[0] != "NONE" %}
+{# Software status only works if the VM has an external IP. #}
+{% set enableStatusWaiter = hasExternalIP %}
+{% set canIpForward = properties["ipForward"] == "On" %}
+{# Convert boolean type to integer. Stackdriver metadata items need value 0 or 1. #}
+{% set enableStackdriverLogging = "1" if properties["enableStackdriverLogging"] else "0" %}
+{# Convert boolean type to integer. Stackdriver metadata items need value 0 or 1. #}
+{% set enableStackdriverMonitoring = "1" if properties["enableStackdriverMonitoring"] else "0" %}
+
+{% set adminUsername = properties["adminUsername"] %}
+{% set isHighlyAvailable = properties["input_IS_HIGHLY_AVAILABLE"] %}
+{% set sourceImage = 'https://www.googleapis.com/compute/v1/projects/thorn-technologies-public/global/images/sftpgw-3-3-3-1660942814' %}
+{% set tagPublic = env["deployment"] + "-public" %}
+{% set tagAdmin = env["deployment"] + "-admin" %}
+
+
+{% set serviceAccount = env["deployment"][0:20] + '-' + env["name"] %}
+
+
+resources:
+  - name: generated-password-admin
+    type: password.py
+    properties:
+      length: 12
+      includeSymbols: True
+
+  - name: sftpgw-default-storage
+    type: storage.jinja
+
+  - name: {{ serviceAccount }}
+    type: serviceaccount.jinja
+
+{% if isHighlyAvailable %}
+  - name: generated-password-db
+    type: password.py
+    properties:
+      length: 20
+      includeSymbols: True
+
+  - name: database
+    type: sftpgw-db.jinja
+    properties:
+      serviceAccount: $(ref.{{ serviceAccount }}.username)
+      prefixLength: 20
+      network: {{ networks[0] }}
+      region: {{ region }}
+      password: $(ref.generated-password-db.password)
+
+  - name: {{ name }}
+    type: sftpgw-autoscale.jinja
+    properties:
+      baseInstanceName: {{ instanceName }}
+      sourceImage: {{ sourceImage }}
+      network: {{ networks[0] }}
+      machineType: {{ machineType }}
+      bootDiskType: {{ bootDiskType }}
+      bootDiskSizeGb: {{ bootDiskSizeGb }}
+      canIpForward: {{ canIpForward }}
+      serviceAccountEmail: $(ref.{{ serviceAccount }}.email)
+      adminCidrs: {{ properties["adminSourceRanges"] }}
+      minReplicas: {{ properties["minReplicas"] }}
+      maxReplicas: {{ properties["maxReplicas"] }}
+      enableStackdriverMonitoring: {{ enableStackdriverLogging }}
+      enableStackdriverLogging: {{ enableStackdriverLogging }}
+      adminUsername: {{ adminUsername }}
+      adminPassword: $(ref.generated-password-admin.password)
+      defaultStorageName: $(ref.sftpgw-default-storage.name)
+      dbInitialPassword: $(ref.generated-password-db.password)
+      dbHost: $(ref.database.connection)
+      region: {{ region }}
+      tagPublic: {{ tagPublic }}
+      tagAdmin: {{ tagAdmin }}
+
+{% else %}
+  - name: {{ name }}
+    type: vm_instance.py
+    properties:
+      instanceName: {{ instanceName }}
+      sourceImage: {{ sourceImage }}
+      zone: {{ zone }}
+      machineType: {{ machineType }}
+      networks:
+      {% for network in networks %}
+        - {{ network }}
+      {% endfor %}
+      {% if subnetworks is defined and subnetworks %}
+      subnetworks:
+      {% for subnetwork in subnetworks %}
+        - {{ subnetwork or '' }}
+      {% endfor %}
+      {% endif %}
+      {% if externalIPs is defined and externalIPs %}
+      externalIPs:
+      {% for externalIP in externalIPs %}
+        - {{ externalIP }}
+      {% endfor %}
+      {% endif %}
+      bootDiskType: {{ bootDiskType }}
+      bootDiskSizeGb: {{ bootDiskSizeGb }}
+      canIpForward: {{ canIpForward }}
+      serviceAccounts:
+        - email: $(ref.{{ serviceAccount }}.email)
+          scopes:
+            - 'https://www.googleapis.com/auth/cloud.useraccounts.readonly'
+            - 'https://www.googleapis.com/auth/logging.write'
+            - 'https://www.googleapis.com/auth/monitoring.write'
+            - 'https://www.googleapis.com/auth/cloud-platform'
+      tags:
+        items:
+          - {{ env["deployment"] }}-deployment
+      metadata:
+        items:
+          - key: google-logging-enable
+            value: {{ enableStackdriverLogging }}
+          - key: google-monitoring-enable
+            value: {{ enableStackdriverMonitoring }}
+          - key: "user-data"
+            value: |
+              #cloud-config
+              repo_update: true
+              repo_upgrade: all
+
+              write_files:
+              - content : |
+                  #!/bin/bash
+                  export CLOUD_PROVIDER=gcp
+                  export ARCHITECTURE=Single
+                path: /opt/sftpgw/launch_config.env
+              - path: /opt/sftpgw/application.properties
+                append: true
+                content: |
+                  features.first-connection.cloud-provider=gcp
+                  features.first-connection.base-prefix=$(ref.sftpgw-default-storage.name)
+                  features.first-connection.use-instance-credentials=true
+{% if adminUsername %}
+              runcmd:
+                - 'curl -X "POST" "http://localhost:8080/3.0.0/admin/config" -H "accept: */*" -H "Content-Type: application/json" -d "{\"password\": \"$(ref.generated-password-admin.password)\",\"username\": \"{{adminUsername}}\"}"'
+{% endif %}
+
+{% endif %}
+
+
+  {% if properties["enableTcp22"] %}
+  - name: {{ env["deployment"] }}-tcp-22
+    type: compute.v1.firewall
+    properties:
+      network: {{ networks[0] }}
+      {% if properties.get("tcp22SourceRanges") %}
+      sourceRanges:
+        {% for source in properties["tcp22SourceRanges"].split(',') %}
+        - '{{ source | trim }}'
+        {% endfor %}
+      {% else %}
+      sourceRanges: ["0.0.0.0/0"]
+      {% endif %}
+      targetTags: [ "{{ tagPublic }}" ]
+      allowed:
+        - IPProtocol: TCP
+          ports: ["22"]
+  {% endif %}
+  {% if properties["adminSourceRanges"] %}
+  - name: {{ env["deployment"] }}-admin-ports
+    type: compute.v1.firewall
+    properties:
+      network: {{ networks[0] }}
+      sourceRanges:
+        {% for source in properties["adminSourceRanges"].split(',') %}
+        - '{{ source | trim }}'
+        {% endfor %}
+      targetTags: ["{{ tagAdmin }}"]
+      allowed:
+        - IPProtocol: TCP
+          ports: ["2222", "80", "443"]
+  {% endif %}
+
+outputs:
+  - name: deployment
+    value: {{ deployment }}
+  - name: project
+    value: {{ project }}
+  - name: vmExternalIP
+    {% if hasExternalIP %}
+    value: $(ref.{{ name }}.ip)
+    {% else %}
+    value: NONE
+    {% endif %}
+{% if not isHighlyAvailable %}
+  - name: vmId
+    value: $(ref.{{ instanceName }}.id)
+  - name: vmInternalIP
+    value: $(ref.{{ name }}.internalIP)
+  - name: vmName
+    value: {{ instanceName }}
+  - name: vmSelfLink
+    value: $(ref.{{ instanceName }}.selfLink)
+{%  endif %}
+  - name: hasExternalIP
+    value: {{ hasExternalIP }}
+  - name: mainNetwork
+    value: {{ networks[0] }}
+  - name: adminUsername
+    value: {{ adminUsername }}
+  - name: adminPassword
+    value: $(ref.generated-password-admin.password)

@@ -1,0 +1,259 @@
+{% set sourceImage = properties["sourceImage"] %}
+{% set network = properties["network"] %}
+{% set serviceAccountEmail = properties['serviceAccountEmail'] %}
+{% set machineType = properties['machineType'] %}
+{% set adminCidrs = properties['adminCidrs'] %}
+{% set minReplicas = properties['minReplicas'] %}
+{% set maxReplicas = properties['maxReplicas'] %}
+{% set bootDiskType = properties['bootDiskType'] %}
+{% set bootDiskSizeGb = properties['bootDiskSizeGb'] %}
+{% set canIpForward = properties['canIpForward'] %}
+{% set enableStackdriverLogging = properties['enableStackdriverLogging'] %}
+{% set enableStackdriverMonitoring = properties['enableStackdriverMonitoring'] %}
+{% set adminUsername = properties['adminUsername'] %}
+{% set adminPassword = properties['adminPassword'] %}
+{% set dbInitialPassword = properties['dbInitialPassword'] %}
+{% set defaultStorageName = properties['defaultStorageName'] %}
+{% set dbHost = properties['dbHost'] %}
+{% set baseInstanceName = properties['baseInstanceName'] %}
+{% set region = properties['region'] %}
+
+
+{% set instanceTemplate = env["deployment"] + "-it" %}
+{% set instanceGroupManager = env["deployment"] + "-igm" %}
+{% set healthCheck = env["deployment"] + "-hc" %}
+{% set regionalHealthCheck = env["deployment"] + "-rhc" %}
+{% set ipAddress = env["deployment"] + "-ip" %}
+{% set firewallPublic = env["deployment"]+"-fw-pub" %}
+{% set firewallPrivate = env["deployment"]+"-fw-priv" %}
+{% set firewallHealthCheck = env["deployment"]+"-fw-hc" %}
+{% set backendHttp = env["deployment"] + "-backend-http" %}
+{% set backendSftp = env["deployment"] + "-backend-sftp" %}
+{% set backendHttps = env["deployment"] + "-backend-https" %}
+{% set backendSsh = env["deployment"] + "-backend-ssh" %}
+{% set tagPublic = env["deployment"] + "-public" %}
+{% set tagAdmin = env["deployment"] + "-admin" %}
+{% set tagHealthCheck = env["deployment"] + "-allow-health-check" %}
+
+
+resources:
+
+- name: {{ instanceTemplate }}
+  type: compute.v1.instanceTemplate
+  properties:
+    properties:
+      machineType: {{ machineType }}
+      networkInterfaces:
+      - network: {{ network }}
+        accessConfigs:
+        - name: External-IP
+          type: ONE_TO_ONE_NAT
+      serviceAccounts:
+      - email: {{ serviceAccountEmail }}
+        scopes:
+        - 'https://www.googleapis.com/auth/cloud.useraccounts.readonly'
+        - 'https://www.googleapis.com/auth/logging.write'
+        - 'https://www.googleapis.com/auth/monitoring.write'
+        - "https://www.googleapis.com/auth/cloud-platform"
+      disks:
+      - deviceName: boot
+        type: PERSISTENT
+        boot: true
+        autoDelete: true
+        initializeParams:
+          diskType: {{ bootDiskType }}
+          diskSizeGb: {{ bootDiskSizeGb }}
+          sourceImage: {{ sourceImage }}
+      canIpForward: {{ canIpForward }}
+
+      tags:
+        items:
+          - {{ env["deployment"] }}-deployment
+          - {{ tagPublic }}
+          - {{ tagAdmin }}
+          - {{ tagHealthCheck }}
+      metadata:
+        items:
+          - key: google-logging-enable
+            value: {{ enableStackdriverLogging }}
+          - key: google-monitoring-enable
+            value: {{ enableStackdriverMonitoring }}
+          - key: "user-data"
+            value: |
+              #cloud-config
+              repo_update: true
+              repo_upgrade: all
+
+              write_files:
+              - content : |
+                  #!/bin/bash
+                  export CLOUD_PROVIDER=gcp
+                  export ARCHITECTURE=HA
+                  export SECRET_ID="{{ dbInitialPassword }}"
+                  export DB_HOST={{ dbHost }}
+                path: /opt/sftpgw/launch_config.env
+              - path: /opt/sftpgw/application.properties
+                append: true
+                content: |
+                  features.first-connection.cloud-provider=gcp
+                  features.first-connection.base-prefix={{ defaultStorageName }}
+                  features.first-connection.use-instance-credentials=true
+{% if adminUsername %}
+              runcmd:
+                - 'curl -X "POST" "http://localhost:8080/3.0.0/admin/config" -H "accept: */*" -H "Content-Type: application/json" -d "{\"password\": \"{{adminPassword}}\",\"username\": \"{{adminUsername}}\"}"'
+{% endif %}
+- name: {{ instanceGroupManager }}
+  type: compute.v1.regionInstanceGroupManager
+  properties:
+    region: {{ region }}
+    baseInstanceName: {{ baseInstanceName }}
+    instanceTemplate: $(ref.{{ instanceTemplate }}.selfLink)
+    targetSize: 1
+    autoHealingPolicies:
+      - healthCheck: $(ref.{{ healthCheck }}.selfLink)
+        initialDelaySec: 300
+    namedPorts:
+      - name: http
+        port: 80
+      - name: https
+        port: 443
+      - name: ssh
+        port: 2222
+      - name: sftp
+        port: 22
+  metadata:
+    dependsOn:
+      - {{ healthCheck }}
+
+- name: {{ env["deployment"] }}-as
+  type: compute.v1.regionAutoscaler
+  properties:
+    region: {{ region }}
+    target: $(ref.{{ instanceGroupManager }}.selfLink)
+    autoscalingPolicy:
+      minNumReplicas: {{ minReplicas }}
+      maxNumReplicas: {{ maxReplicas }}
+      cpuUtilization:
+        utilizationTarget: 0.8
+      coolDownPeriodSec: 180
+
+- name: {{ healthCheck }}
+  type: compute.v1.healthCheck
+  properties:
+    type: TCP
+    tcpHealthCheck:
+      port: 80
+
+- name: {{ regionalHealthCheck }}
+  type: compute.v1.regionHealthChecks
+  properties:
+    region: {{ region }}
+    type: TCP
+    tcpHealthCheck:
+      port: 80
+
+- name: {{ ipAddress }}
+  type: compute.v1.address
+  properties:
+    region: {{ region }}
+
+- name: {{ env["deployment"] }}-fr-80
+  type: compute.v1.forwardingRule
+  properties:
+    region: {{ region }}
+    portRange: 80
+    backendService: $(ref.{{ backendHttp }}.selfLink)
+    IPAddress: $(ref.{{ ipAddress }}.selfLink)
+
+- name: {{ env["deployment"] }}-fr-443
+  type: compute.v1.forwardingRule
+  properties:
+    region: {{ region }}
+    portRange: 443
+    backendService: $(ref.{{ backendHttps }}.selfLink)
+    IPAddress: $(ref.{{ ipAddress }}.selfLink)
+
+- name: {{ env["deployment"] }}-fr-22
+  type: compute.v1.forwardingRule
+  properties:
+    region: {{ region }}
+    portRange: 22
+    backendService: $(ref.{{ backendSftp }}.selfLink)
+    IPAddress: $(ref.{{ ipAddress }}.selfLink)
+
+- name: {{ env["deployment"] }}-fr-2222
+  type: compute.v1.forwardingRule
+  properties:
+    region: {{ region }}
+    portRange: 2222
+    backendService: $(ref.{{  backendSsh }}.selfLink)
+    IPAddress: $(ref.{{ ipAddress }}.selfLink)
+
+- name: {{ firewallHealthCheck }}
+  type: compute.v1.firewall
+  properties:
+    network:  {{ network }}
+    targetTags:
+      - {{ tagHealthCheck }}
+    sourceRanges:
+      - 130.211.0.0/22
+      - 35.191.0.0/16
+      - 209.85.152.0/22
+      - 209.85.204.0/22
+      - 169.254.169.254/32
+    allowed:
+    - IPProtocol: TCP
+      ports: ["80"]
+
+- name: {{ backendHttp }}
+  type: compute.v1.regionBackendService
+  properties:
+    region: {{ region }}
+    healthChecks:
+      - $(ref.{{ regionalHealthCheck }}.selfLink)
+    backends:
+      - group: $(ref.{{ instanceGroupManager }}.instanceGroup)
+    portName: http
+    protocol: TCP
+    loadBalancingScheme: EXTERNAL
+
+- name: {{ backendHttps }}
+  type: compute.v1.regionBackendService
+  properties:
+    region: {{ region }}
+    healthChecks:
+      - $(ref.{{ regionalHealthCheck }}.selfLink)
+    backends:
+      - group: $(ref.{{ instanceGroupManager }}.instanceGroup)
+    portName: https
+    protocol: TCP
+    loadBalancingScheme: EXTERNAL
+
+- name: {{ backendSsh }}
+  type: compute.v1.regionBackendService
+  properties:
+    region: {{ region }}
+    healthChecks:
+      - $(ref.{{ regionalHealthCheck }}.selfLink)
+    backends:
+      - group: $(ref.{{ instanceGroupManager }}.instanceGroup)
+    portName: ssh
+    protocol: TCP
+    loadBalancingScheme: EXTERNAL
+
+- name: {{ backendSftp }}
+  type: compute.v1.regionBackendService
+  properties:
+    region: {{ region }}
+    healthChecks:
+      - $(ref.{{ regionalHealthCheck }}.selfLink)
+    backends:
+      - group: $(ref.{{ instanceGroupManager }}.instanceGroup)
+    portName: sftp
+    protocol: TCP
+    loadBalancingScheme: EXTERNAL
+
+outputs:
+  - name: ip
+    value: $(ref.{{ ipAddress }}.address)
+

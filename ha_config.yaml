@@ -1,0 +1,8 @@
+imports:
+  - path: solution.jinja
+
+resources:
+  - name: solution
+    type: solution.jinja
+    properties:
+      input_IS_HIGHLY_AVAILABLE: True

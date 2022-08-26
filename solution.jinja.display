@@ -1,0 +1,161 @@
+description:
+  author:
+    title: placeholder
+  title: placeholder
+  version: 3.4.0
+  softwareGroups:
+  - type: SOFTWARE_GROUP_OS
+    software:
+    - title: Ubuntu
+      version: '22.04'
+  - software:
+    - title: SFTP Gateway
+      version: 3.4.0
+
+input:
+  properties:
+    - name: zone
+      title: Zone
+    - name: adminUsername
+      title: Admin Username
+    - name: machineType
+      title: Machine type
+    - name: bootDiskType
+      title: Boot disk type
+      section: BOOT_DISK
+    - name: bootDiskSizeGb
+      title: Boot disk size in GB
+      section: BOOT_DISK
+    - name: network
+      title: Network name
+      section: NETWORKING
+    - name: subnetwork
+      title: Subnetwork name
+      section: NETWORKING
+    - name: externalIP
+      title: External IP
+      tooltip: 'An external IP address associated with this instance. Selecting "None" will result in the instance having no external internet access. <a href="https://cloud.google.com/compute/docs/configure-instance-ip-addresses">Learn more</a>'
+      section: NETWORKING
+    - name: enableTcp22
+      title: Allow TCP port 22 (SFTP) traffic from the Internet
+      section: NETWORKING
+    - name: tcp22SourceRanges
+      title: Source IP ranges for TCP port 22 (SFTP) traffic
+      tooltip: 'Traffic is only allowed from sources within these IP address ranges. Use CIDR notation when entering ranges. <a href="https://cloud.google.com/compute/docs/networking#firewalls">Learn more</a>'
+      placeholder: '0.0.0.0/0, 192.169.0.2/24'
+      section: NETWORKING
+    - name: enableAdminPorts
+      title: Allow Admin Ports (80, 443, 2222) traffic from the Internet
+      tooltip: 'Traffic to the admin controls (ports 80, 443, and 2222) are only allowed from sources within these IP address ranges. Use CIDR notation when entering ranges. <a href="https://cloud.google.com/compute/docs/networking#firewalls">Learn more</a>'
+      section: NETWORKING
+    - name: adminSourceRanges
+      title: Source IP ranges for Admin ports(80, 443, 2222)
+      tooltip: 'Traffic to the admin controls (ports 80, 443, and 2222) are only allowed from sources within these IP address ranges. Use CIDR notation when entering ranges. <a href="https://cloud.google.com/compute/docs/networking#firewalls">Learn more</a>'
+      placeholder: '0.0.0.0/0, 192.169.0.2/24'
+      section: NETWORKING
+    - name: ipForward
+      title: IP forwarding
+      tooltip: 'Forwarding allows the instance to help route packets. <a href="https://cloud.google.com/compute/docs/networking#canipforward">Learn more</a>'
+      section: NETWORKING
+      level: 1
+    - name: input_IS_HIGHLY_AVAILABLE
+      title: Enable High Availability
+      tooltip: 'High Availability will create a managed database service, autoscaler, and load balancer. SFTP Gateway instances are spread to different zones within a region, allowing it to automatically recover if a zone fails.'
+      section: HIGHAVAILABILITY
+    - name: minReplicas
+      title: Minimum Autoscale Instance Count
+      tooltip: 'Specify the minimum number of concurrent SFTP Gateway instances. Instances are removed down to this number when cpu usage is below 80%.'
+      section: HIGHAVAILABILITY
+    - name: maxReplicas
+      title: Maximum Autoscale Instance Count
+      tooltip: 'Specify the maximum number of concurrent SFTP Gateway instances. Instances are added when an instance has over 80% cpu usage.'
+      section: HIGHAVAILABILITY
+    - name: enableStackdriverLogging
+      title: Enable Stackdriver Logging
+      tooltip: 'Stackdriver Logging allows you to store, search, analyze, monitor, and alert on log data and events. <a href="https://cloud.google.com/logging/">Learn more</a>'
+      section: STACKDRIVER
+    - name: enableStackdriverMonitoring
+      title: Enable Stackdriver Monitoring
+      tooltip: 'Stackdriver Monitoring provides visibility into the performance, uptime, and overall health of cloud-powered applications. <a href="https://cloud.google.com/monitoring/">Learn more</a>'
+      section: STACKDRIVER
+  sections:
+    - name: BOOT_DISK
+      title: Boot Disk
+      tooltip: Each instance requires a disk to boot from.
+    - name: NETWORKING
+      title: Networking
+    - name: STACKDRIVER
+      title: Stackdriver
+      subtext: Monitoring and management for services, containers, applications, and infrastructure
+    - name: HIGHAVAILABILITY
+      title: High Availability
+      subtext: Configure high availability to create a separate database service, autoscaler, and load balancer
+
+runtime:
+  deployingMessage: Deployment can take several minutes to complete.
+  applicationTable:
+    rows:
+      - label: Admin URL
+        value: <a href="https://{{ externalIp(outputs().vmSelfLink) }}//">https://{{ externalIp(outputs().vmSelfLink) }}:443//</a>
+        showIf: '{{ outputs().hasExternalIP }}'
+      - label: Admin URL (internal IP)
+        value: https://{{ outputs().vmInternalIP }}:443//
+        showIf: '{{ !outputs().hasExternalIP }}'
+      - label: Admin Username
+        value: '{{ outputs().adminUsername }}'
+      - label: Admin Password
+        value: '{{ outputs().adminPassword }}'
+      - label: Zone
+        value: '{{ properties().zone }}'
+      - label: Instance machine type
+        value: '{{ properties().machineType }}'
+  primaryButton:
+    label: Log into the admin panel
+    type: TYPE_URL
+    action: https://{{ externalIp(outputs().vmSelfLink) }}:443//
+  suggestedActions:
+    - heading: No external IP configured
+      description: 'The VM instance has been configured with no external IP or internet access. Connecting to it directly may not be possible. Consider using a <a href="https://cloud.google.com/compute/docs/instances/connecting-advanced#bastion_host">bastion host</a> to access this VM.'
+      showIf: '{{ !outputs().hasExternalIP }}'
+    - heading: Access the SFTP Gateway Admin web interface
+      description: Visit <a href="https://{{ externalIp(outputs().vmSelfLink) }}">https://{{ externalIp(outputs().vmSelfLink) }}</a>
+    - heading: Open TCP port 22 traffic
+      description: >-
+        This firewall rule is not enabled.
+        To allow specific network traffic from the Internet,
+        create a firewall rule to open TCP port 22 traffic
+        for target tag "{{ outputs().deployment }}-deployment".
+        <a href="https://cloud.google.com/compute/docs/networking">Learn more</a><br>
+        If you are using Google Cloud SDK, type the following command in
+        the terminal:
+      snippet: >-
+        gcloud --project={{ outputs().project }} compute firewall-rules
+        create "{{ outputs().deployment }}-tcp-22"
+        --network {{ outputs().mainNetwork }}
+        --allow tcp:22
+        --target-tags "{{ outputs().deployment }}-deployment"
+      showIf: '{{ !properties().enableTcp22 }}'
+    - heading: Open TCP port 2222, 443, and 80 traffic
+      description: >-
+        This firewall rule is not enabled.
+        To allow specific network traffic from the Internet,
+        create a firewall rule to open TCP port 2222, 443, and 80 traffic
+        for target tag "{{ outputs().deployment }}-deployment".
+        <a href="https://cloud.google.com/compute/docs/networking">Learn more</a><br>
+        If you are using Google Cloud SDK, type the following command in
+        the terminal:
+      snippet: >-
+        gcloud --project={{ outputs().project }} compute firewall-rules
+        create "{{ outputs().deployment }}-admin-ports"
+        --network {{ outputs().mainNetwork }}
+        --allow tcp:2222,tcp:80,tcp:443
+        --target-tags "{{ outputs().deployment }}-deployment"
+      showIf: '{{ !properties().adminSourceRanges }}'
+    - heading: Assign a static external IP address to your VM instance
+      description: 'An ephemeral external IP address has been assigned to the VM instance. If you require a static external IP address, you may promote the address to static. <a href="https://cloud.google.com/compute/docs/instances-and-network#promote_ephemeral_ip">Learn more</a>'
+      showIf: '{{ outputs().hasExternalIP }}'
+
+annotations:
+  autogenSpecType: 'SINGLE_VM'
+
+metadata_version: v1
